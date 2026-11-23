@@ -1,19 +1,10 @@
-"""
-QuickSort Híbrido: Mediana das Medianas (escolha de pivô em O(n) garantido)
-combinado com Insertion Sort para partições pequenas (<= 32 elementos).
-
-Aplicação no simulador: ordenação do lote de upload de pacotes por tamanho,
-implementando a política de escalonamento *Shortest Job First* (SJF) antes
-do despacho pela Fila FIFO de transmissão.
-"""
+"""Ordenação com QuickSort híbrido (Mediana das Medianas + Insertion Sort)."""
 
 LIMIAR_INSERTION_SORT = 32
 TAMANHO_GRUPO_MEDIANA = 5
 
 
 def _insertion_sort(lista: list, esquerda: int, direita: int, chave) -> None:
-    """Ordena in-place o intervalo [esquerda, direita] de `lista`. Estável e O(n^2) no pior caso,
-    mas extremamente eficiente para as partições pequenas em que é usado (<= 32 elementos)."""
     for i in range(esquerda + 1, direita + 1):
         item_atual = lista[i]
         chave_atual = chave(item_atual)
@@ -25,22 +16,12 @@ def _insertion_sort(lista: list, esquerda: int, direita: int, chave) -> None:
 
 
 def _mediana_de_grupo(lista: list, esquerda: int, direita: int, chave):
-    """Ordena um grupo pequeno (<= 5 elementos) e retorna o elemento mediano."""
     _insertion_sort(lista, esquerda, direita, chave)
-    meio = (esquerda + direita) // 2
-    return lista[meio]
+    return lista[(esquerda + direita) // 2]
 
 
 def _mediana_das_medianas(lista: list, esquerda: int, direita: int, chave):
-    """
-    Calcula, recursivamente, um pivô de boa qualidade (algoritmo BFPRT):
-    1. Divide o intervalo em grupos de até 5 elementos.
-    2. Ordena cada grupo (Insertion Sort) e coleta sua mediana.
-    3. Repete o processo sobre as medianas coletadas até sobrar um único grupo.
-
-    Garante que o pivô escolhido sempre descarta uma fração mínima e previsível
-    dos elementos, evitando o pior caso O(n^2) do QuickSort clássico.
-    """
+    """Seleciona um pivô balanceado dividindo o intervalo em grupos de 5."""
     tamanho = direita - esquerda + 1
     if tamanho <= TAMANHO_GRUPO_MEDIANA:
         return _mediana_de_grupo(lista, esquerda, direita, chave)
@@ -55,93 +36,74 @@ def _mediana_das_medianas(lista: list, esquerda: int, direita: int, chave):
     return _mediana_das_medianas(medianas, 0, len(medianas) - 1, chave)
 
 
-def _particionar(lista: list, esquerda: int, direita: int, valor_pivo, chave) -> int:
-    """
-    Particiona [esquerda, direita] ao redor do objeto `valor_pivo` (esquema de Lomuto).
-    Primeiro localiza o pivô dentro do intervalo e o move para o final.
-    """
-    indice_pivo = esquerda
-    for k in range(esquerda, direita + 1):
-        if lista[k] is valor_pivo:
-            indice_pivo = k
-            break
-    lista[indice_pivo], lista[direita] = lista[direita], lista[indice_pivo]
+def _particionar_3_vias(lista: list, esquerda: int, direita: int, chave_pivo, chave) -> tuple[int, int]:
+    """Particiona o intervalo em menores, iguais e maiores que o pivô."""
+    lt = esquerda
+    i = esquerda
+    gt = direita
 
-    chave_pivo = chave(lista[direita])
-    i = esquerda - 1
-
-    for j in range(esquerda, direita):
-        if chave(lista[j]) <= chave_pivo:
+    while i <= gt:
+        chave_atual = chave(lista[i])
+        if chave_atual < chave_pivo:
+            lista[lt], lista[i] = lista[i], lista[lt]
+            lt += 1
             i += 1
-            lista[i], lista[j] = lista[j], lista[i]
+        elif chave_atual > chave_pivo:
+            lista[i], lista[gt] = lista[gt], lista[i]
+            gt -= 1
+        else:
+            i += 1
 
-    lista[i + 1], lista[direita] = lista[direita], lista[i + 1]
-    return i + 1
+    return lt, gt
 
 
 def _quicksort_hibrido(lista: list, esquerda: int, direita: int, chave) -> None:
-    # Laço em vez de recursão dupla: recursiona só na partição menor e itera na
-    # maior, limitando a profundidade da pilha a O(log n) mesmo no pior caso.
     while esquerda < direita:
-        tamanho = direita - esquerda + 1
-
-        if tamanho <= LIMIAR_INSERTION_SORT:
+        if direita - esquerda + 1 <= LIMIAR_INSERTION_SORT:
             _insertion_sort(lista, esquerda, direita, chave)
             return
 
         pivo = _mediana_das_medianas(lista, esquerda, direita, chave)
-        indice_particao = _particionar(lista, esquerda, direita, pivo, chave)
+        lt, gt = _particionar_3_vias(lista, esquerda, direita, chave(pivo), chave)
 
-        if indice_particao - esquerda < direita - indice_particao:
-            _quicksort_hibrido(lista, esquerda, indice_particao - 1, chave)
-            esquerda = indice_particao + 1
+        if lt - esquerda < direita - gt:
+            _quicksort_hibrido(lista, esquerda, lt - 1, chave)
+            esquerda = gt + 1
         else:
-            _quicksort_hibrido(lista, indice_particao + 1, direita, chave)
-            direita = indice_particao - 1
+            _quicksort_hibrido(lista, gt + 1, direita, chave)
+            direita = lt - 1
 
 
 def quicksort_hibrido(lista: list, chave=lambda item: item) -> list:
-    """
-    Ordena `lista` in-place em ordem crescente segundo `chave(item)` e também
-    retorna a referência (conveniente para encadear chamadas).
-
-    `chave` é uma função que extrai o valor de comparação de cada elemento
-    (ex.: `lambda pacote: pacote.tamanho`). Por padrão compara os próprios itens.
-    """
+    """Ordena a lista in-place em ordem crescente conforme `chave`."""
     if len(lista) > 1:
         _quicksort_hibrido(lista, 0, len(lista) - 1, chave)
     return lista
 
 
 def ordenar_pacotes_por_tamanho(pacotes: list) -> list:
-    """
-    Wrapper de domínio: ordena uma lista de `Packet` por tamanho (MB) crescente,
-    implementando a política *Shortest Job First* (SJF) para a fila de upload.
-    """
+    """Ordena pacotes por tamanho crescente."""
     return quicksort_hibrido(pacotes, chave=lambda pacote: pacote.tamanho)
+
+
+def ordenar_pacotes_por_sequencia(pacotes: list) -> list:
+    """Ordena pacotes divididos pelo número de sequência."""
+    return quicksort_hibrido(pacotes, chave=lambda pacote: pacote.seq)
 
 
 if __name__ == "__main__":
     import random
+    from core.models import Packet, converter_para_bytes
 
-    print("=== TESTE UNITÁRIO: structures/sorting.py (QUICKSORT HÍBRIDO) ===")
-
-    # 1. Lista pequena (cai direto no Insertion Sort, <= 32 elementos)
     pequena = [9, 3, 7, 1, 5, 2, 8, 4, 6]
     quicksort_hibrido(pequena)
-    print("Pequena ordenada:", pequena)
     assert pequena == sorted([9, 3, 7, 1, 5, 2, 8, 4, 6])
 
-    # 2. Lista grande aleatória (ativa Mediana das Medianas)
     grande = [random.randint(0, 100_000) for _ in range(5000)]
     esperado = sorted(grande)
-    quicksort_hibrido(list(grande))  # smoke test sem comparar referência
-    copia = list(grande)
-    quicksort_hibrido(copia)
-    assert copia == esperado
-    print(f"Lista grande ({len(grande)} elementos) ordenada corretamente.")
+    quicksort_hibrido(grande)
+    assert grande == esperado
 
-    # 3. Pior caso clássico do QuickSort ingênuo: lista já ordenada e lista invertida
     ja_ordenada = list(range(2000))
     quicksort_hibrido(ja_ordenada)
     assert ja_ordenada == list(range(2000))
@@ -149,31 +111,19 @@ if __name__ == "__main__":
     invertida = list(range(2000, 0, -1))
     quicksort_hibrido(invertida)
     assert invertida == list(range(1, 2001))
-    print("Casos adversariais (já ordenada / invertida) tratados sem degradar para O(n^2) perceptível.")
 
-    # 4. Ordenação por chave (simulando pacotes com atributo 'tamanho') -> SJF
-    class _MockPacote:
-        def __init__(self, nome, tamanho):
-            self.arquivo = nome
-            self.tamanho = tamanho
+    todos_iguais = [7] * 2000
+    quicksort_hibrido(todos_iguais)
+    assert todos_iguais == [7] * 2000
 
-        def __repr__(self):
-            return f"{self.arquivo}({self.tamanho}MB)"
+    pacote = Packet("10.0.0.10", "10.0.0.11", "video.mp4", converter_para_bytes(50, "MB"))
+    partes = pacote.dividir()
+    del pacote
+    random.shuffle(partes)
+    ordenar_pacotes_por_sequencia(partes)
+    assert [p.seq for p in partes] == list(range(1, len(partes) + 1))
 
-    lote = [
-        _MockPacote("video.mp4", 50),
-        _MockPacote("notas.txt", 2),
-        _MockPacote("instalador.exe", 120),
-        _MockPacote("foto.png", 5),
-        _MockPacote("musica.mp3", 8),
-    ]
-    ordenar_pacotes_por_tamanho(lote)
-    print("Lote ordenado (SJF):", lote)
-    assert [p.tamanho for p in lote] == [2, 5, 8, 50, 120]
-
-    # 5. Estabilidade de valores repetidos (duplicatas não devem sumir)
     com_duplicatas = [5, 3, 5, 1, 5, 2, 5]
     quicksort_hibrido(com_duplicatas)
     assert com_duplicatas == [1, 2, 3, 5, 5, 5, 5]
-
-    print("Todos os testes de QuickSort Híbrido passaram!")
+    print("sorting.py OK")
