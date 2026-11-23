@@ -1,25 +1,16 @@
-from queue import Queue
-
-# TODO: Quando imperador subir o hash_table.py e o models.py:
-# 1. Descomentar a linha abaixo:
-# from structures.hash_table import HashTable
-# 2. Apagar a classe temporária HashTable logo abaixo.
-
-
-class HashTable:
-    """
-    Adaptador temporário usando dict nativo apenas para testes isolados.
-    Mantém a mesma interface (.insert e .get) da HashTable definitiva.
-    """
-
-    def __init__(self, capacity: int = 11):
-        self._dados = {}
-
-    def insert(self, chave: str, valor) -> None:
-        self._dados[chave] = valor
-
-    def get(self, chave: str):
-        return self._dados.get(chave, None)
+# Import duplo: funciona tanto quando este módulo é importado como parte do
+# pacote (main.py -> "from structures.tree import ...") quanto quando é
+# executado isoladamente (python structures/tree.py, usado no teste abaixo).
+# Importante: NÃO usar "from queue import Queue" puro aqui — esse nome colide
+# com o módulo "queue" da biblioteca padrão do Python (que não tem .enqueue()/
+# .dequeue()) e, fora do modo de execução direta, o Python acha o nativo antes
+# do nosso, quebrando o programa com AttributeError silenciosamente tarde.
+try:
+    from .queue import Queue
+    from .hash_table import HashTable
+except ImportError:
+    from queue import Queue
+    from hash_table import HashTable
 
 
 class NetworkNode:
