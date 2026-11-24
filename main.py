@@ -6,6 +6,14 @@ import sys
 
 from core.models import Device, Packet, converter_para_bytes, formatar_tamanho
 from core.dhcp import DHCPServer
+from core.sockets import (
+    PORTA_PADRAO,
+    PORTA_SIMULADOR,
+    ReceptorSimuladorUDP,
+    ler_arquivo_transfer,
+    listar_arquivos_transfer,
+    obter_ip_local,
+)
 from data.storage import carregar_estado, salvar_estado
 from structures.hash_table import HashTable
 from structures.tree import NetworkNode, RouterTree, Router
@@ -49,8 +57,15 @@ class Simulador:
         self._indexar_dispositivo(novo_router)
         return f"[OK] Roteador '{nome}' conectado ao R_Core com IP {ip}."
 
-    def conectar_pc(self, nome: str, nome_setor: str) -> str:
-        """Conecta um novo PC a um roteador de setor existente."""
+    def conectar_pc(
+        self,
+        nome: str,
+        nome_setor: str,
+        modo: str = "SIMULADO",
+        host_real: str | None = None,
+        porta_real: int | None = None,
+    ) -> str:
+        """Conecta um PC simulado ou real (via cabo/rede) a um roteador de setor."""
         nome = nome.strip()
         nome_setor = nome_setor.strip()
         if not nome:
@@ -59,17 +74,31 @@ class Simulador:
             return "[ERRO] Nome do setor não pode ser vazio."
         if self.tabela_dispositivos.get(nome) is not None:
             return f"[ERRO] Já existe um dispositivo chamado '{nome}'."
+        if modo == "REAL" and (not host_real or not host_real.strip()):
+            return "[ERRO] Informe o IP físico do PC real."
 
         ip = self.dhcp.alocar_ip()
         if ip is None:
             return "[ERRO] Pool de IPs esgotado."
 
-        novo_pc = Device(nome, ip, tipo="PC")
+        novo_pc = Device(
+            nome,
+            ip,
+            tipo="PC",
+            modo=modo,
+            host_real=host_real,
+            porta_real=porta_real if modo == "REAL" else None,
+        )
         if not self.arvore.adicionar_pc(nome_setor, NetworkNode(novo_pc)):
             self.dhcp.liberar_ip(ip)
             return f"[ERRO] Setor '{nome_setor}' não encontrado."
 
         self._indexar_dispositivo(novo_pc)
+        if modo == "REAL":
+            return (
+                f"[OK] PC real '{nome}' ({host_real}:{porta_real}) conectado ao setor "
+                f"'{nome_setor}' com IP interno {ip}."
+            )
         return f"[OK] PC '{nome}' conectado ao setor '{nome_setor}' com IP {ip}."
 
     def desconectar_pc(self, identificador: str) -> str:
@@ -106,39 +135,10 @@ class Simulador:
         )
         return dispositivos
 
-    def enviar_arquivo(
-        self,
-        origem: str,
-        destino: str,
-        arquivo: str,
-        valor_tamanho: float,
-        unidade: str,
-    ) -> str:
-        """Instancia o pacote do arquivo, divide em pacotes de até 1500 B e envia para a fila."""
-        arquivo = arquivo.strip()
-        if not arquivo:
-            return "[ERRO] Nome do arquivo não pode ser vazio."
-
-        dispositivo_origem = self.tabela_dispositivos.get(origem.strip())
-        dispositivo_destino = self.tabela_dispositivos.get(destino.strip())
-
-        if dispositivo_origem is None:
-            return f"[ERRO] Origem '{origem}' não encontrada."
-        if dispositivo_destino is None:
-            return f"[ERRO] Destino '{destino}' não encontrado."
-
-        try:
-            tamanho_bytes = converter_para_bytes(valor_tamanho, unidade)
-            pacote_inicial = Packet(
-                dispositivo_origem.ip,
-                dispositivo_destino.ip,
-                arquivo,
-                tamanho_bytes,
-            )
-            partes = pacote_inicial.dividir()
-            del pacote_inicial
-        except ValueError as erro:
-            return f"[ERRO] {erro}"
+    def _enfileirar_pacote_inicial(self, pacote_inicial: Packet, descricao: str) -> str:
+        tamanho_total = pacote_inicial.tamanho
+        partes = pacote_inicial.dividir()
+        del pacote_inicial
 
         if len(partes) > 1:
             random.shuffle(partes)
@@ -146,7 +146,7 @@ class Simulador:
         for pacote in partes:
             self.roteador.fila_transmissao.enqueue(pacote)
 
-        linhas = [f"[OK] Arquivo '{arquivo}' ({formatar_tamanho(tamanho_bytes)}) enviado para a fila:"]
+        linhas = [f"[OK] {descricao} ({formatar_tamanho(tamanho_total)}) enviado para a fila:"]
         if len(partes) <= 20:
             for pacote in partes:
                 linhas.append(f"  Pacote {pacote.seq} enfileirado ({formatar_tamanho(pacote.tamanho)})")
@@ -159,6 +159,89 @@ class Simulador:
 
         linhas.append(f"  Total na fila: {self.roteador.fila_transmissao.size()}")
         return "\n".join(linhas)
+
+    def _validar_origem_destino(self, origem: str, destino: str):
+        disp_origem = self.tabela_dispositivos.get(origem.strip())
+        disp_destino = self.tabela_dispositivos.get(destino.strip())
+        if disp_origem is None:
+            return None, None, f"[ERRO] Origem '{origem}' não encontrada."
+        if disp_destino is None:
+            return None, None, f"[ERRO] Destino '{destino}' não encontrado."
+        return disp_origem, disp_destino, None
+
+    def enviar_arquivo(
+        self,
+        origem: str,
+        destino: str,
+        arquivo: str,
+        valor_tamanho: float,
+        unidade: str,
+    ) -> str:
+        """Envia um arquivo simulado (apenas tamanho)."""
+        arquivo = arquivo.strip()
+        if not arquivo:
+            return "[ERRO] Nome do arquivo não pode ser vazio."
+
+        disp_origem, disp_destino, erro = self._validar_origem_destino(origem, destino)
+        if erro:
+            return erro
+
+        try:
+            tamanho_bytes = converter_para_bytes(valor_tamanho, unidade)
+            pacote_inicial = Packet(disp_origem.ip, disp_destino.ip, arquivo, tamanho_bytes)
+            return self._enfileirar_pacote_inicial(pacote_inicial, f"Arquivo '{arquivo}'")
+        except ValueError as e:
+            return f"[ERRO] {e}"
+
+    def enviar_arquivo_real(self, origem: str, destino: str, nome_arquivo: str) -> str:
+        """Lê um arquivo real da pasta transfer/ e envia seus bytes pela rede."""
+        nome_arquivo = nome_arquivo.strip()
+        if not nome_arquivo:
+            return "[ERRO] Informe o nome do arquivo em transfer/."
+
+        disp_origem, disp_destino, erro = self._validar_origem_destino(origem, destino)
+        if erro:
+            return erro
+
+        try:
+            dados = ler_arquivo_transfer(nome_arquivo)
+            if not dados:
+                return f"[ERRO] Arquivo '{nome_arquivo}' está vazio (0 B)."
+            pacote_inicial = Packet(
+                disp_origem.ip,
+                disp_destino.ip,
+                nome_arquivo,
+                len(dados),
+                payload=dados,
+            )
+            return self._enfileirar_pacote_inicial(pacote_inicial, f"Arquivo real '{nome_arquivo}'")
+        except (FileNotFoundError, OSError, ValueError) as e:
+            return f"[ERRO] {e}"
+
+    def enviar_mensagem(self, origem: str, destino: str, texto: str) -> str:
+        """Envia uma mensagem de texto e gera arquivo .txt no destinatário."""
+        texto = texto.strip()
+        if not texto:
+            return "[ERRO] A mensagem não pode ser vazia."
+
+        disp_origem, disp_destino, erro = self._validar_origem_destino(origem, destino)
+        if erro:
+            return erro
+
+        dados = texto.encode("utf-8")
+        nome_msg = f"msg_{disp_origem.nome}_para_{disp_destino.nome}_{Packet._contador_id + 1}.txt"
+        try:
+            pacote_inicial = Packet(
+                disp_origem.ip,
+                disp_destino.ip,
+                nome_msg,
+                len(dados),
+                payload=dados,
+                eh_mensagem=True,
+            )
+            return self._enfileirar_pacote_inicial(pacote_inicial, f"Mensagem '{nome_msg}'")
+        except ValueError as e:
+            return f"[ERRO] {e}"
 
 
 BANNER = """==========================================================================
@@ -173,7 +256,7 @@ TITULOS_OPCOES = {
     "3": "CONECTAR PC A UM SETOR",
     "4": "DESCONECTAR PC",
     "5": "DISPOSITIVOS CONECTADOS",
-    "6": "ENVIAR ARQUIVO",
+    "6": "ENVIAR ARQUIVO OU MENSAGEM",
     "7": "PROCESSAR 1 PACOTE",
     "8": "PROCESSAR 10 PACOTES",
     "9": "PROCESSAR TODOS OS PACOTES",
@@ -200,7 +283,7 @@ MENU = """------------------------------- MENU ---------------------------------
  [3]  Conectar PC a um setor
  [4]  Desconectar PC
  [5]  Listar dispositivos conectados
- [6]  Enviar arquivo
+ [6]  Enviar arquivo ou mensagem
  [7]  Processar 1 pacote da fila
  [8]  Processar 10 pacotes da fila
  [9]  Processar todos os pacotes da fila
@@ -237,7 +320,7 @@ def cabecalho_operacao(opcao: str) -> None:
     print("=" * 74 + "\n")
 
 
-def barra_status(sim: Simulador) -> str:
+def barra_status(sim: Simulador, receptor: ReceptorSimuladorUDP | None = None, ip_local: str = "") -> str:
     total_disp = len(sim.listar_dispositivos())
     fila_qtd = sim.roteador.fila_transmissao.size()
     em_transito = sim.roteador.total_pacotes_em_transito()
@@ -248,6 +331,8 @@ def barra_status(sim: Simulador) -> str:
         f" STATUS | Core: {Simulador.IP_CORE} | Dispositivos: {total_disp} | "
         f"Fila: {fila_qtd} | Em trânsito: {em_transito} | DHCP livres: {dhcp_livres}"
     )
+    if receptor is not None and receptor.ativo:
+        linha += f"\n REDE   | UDP ativo em {ip_local}:{receptor.porta} | Recebidos via rede: {receptor.total_recebidos}"
     if proximo is not None:
         linha += f"\n PRÓXIMO NA FILA | {proximo}"
     return linha
@@ -287,107 +372,181 @@ def pedir_numero_positivo(mensagem: str) -> float | None:
         return valor
 
 
+def pedir_porta(padrao: int = PORTA_PADRAO) -> int:
+    while True:
+        texto = input(f"Porta do PC real (ENTER para {padrao}): ").strip()
+        if texto == "":
+            return padrao
+        try:
+            porta = int(texto)
+            if 1 <= porta <= 65535:
+                return porta
+        except ValueError:
+            pass
+        print("[ERRO] Informe uma porta válida entre 1 e 65535.")
+
+
 def executar_cli() -> None:
     configurar_terminal()
     sim = Simulador()
     carregar_estado(sim)
 
-    while True:
-        limpar_tela()
-        print(BANNER)
-        print(barra_status(sim))
-        print(MENU)
-        opcao = input("simulador@R_Core:~$ ").strip()
+    ip_local = obter_ip_local()
+    receptor = ReceptorSimuladorUDP(sim, porta=PORTA_SIMULADOR)
+    receptor.iniciar()
 
-        if opcao == "0":
-            salvar_estado(sim)
+    try:
+        while True:
             limpar_tela()
-            print("Estado salvo em data/estado_rede.json. Encerrando o simulador.")
-            break
+            print(BANNER)
+            print(barra_status(sim, receptor, ip_local))
+            print(MENU)
+            opcao = input("simulador@R_Core:~$ ").strip()
 
-        if opcao not in TITULOS_OPCOES:
-            limpar_tela()
-            print(f"[ERRO] Opção '{opcao}' inválida.")
-            pausar()
-            continue
+            if opcao == "0":
+                salvar_estado(sim)
+                limpar_tela()
+                print("Estado salvo em data/estado_rede.json. Encerrando o simulador.")
+                break
 
-        cabecalho_operacao(opcao)
+            if opcao not in TITULOS_OPCOES:
+                limpar_tela()
+                print(f"[ERRO] Opção '{opcao}' inválida.")
+                pausar()
+                continue
 
-        if opcao == "1":
-            print(sim.arvore.imprimir_arvore())
+            cabecalho_operacao(opcao)
 
-        elif opcao == "2":
-            nome = input("Nome do roteador de setor (ex: R_Lab1): ").strip()
-            print("\n" + sim.conectar_roteador_setor(nome))
+            if opcao == "1":
+                print(sim.arvore.imprimir_arvore())
 
-        elif opcao == "3":
-            nome = input("Nome do PC (ex: PC1): ").strip()
-            setor = input("Nome do roteador de setor: ").strip()
-            print("\n" + sim.conectar_pc(nome, setor))
+            elif opcao == "2":
+                nome = input("Nome do roteador de setor (ex: R_Lab1): ").strip()
+                print("\n" + sim.conectar_roteador_setor(nome))
 
-        elif opcao == "4":
-            alvo = input("Nome ou IP do PC: ").strip()
-            print("\n" + sim.desconectar_pc(alvo))
+            elif opcao == "3":
+                print("Tipo de PC:")
+                print("  [1] PC simulado")
+                print("  [2] PC real (via cabo/rede)")
+                tipo_pc = input("Escolha (1-2): ").strip()
 
-        elif opcao == "5":
-            dispositivos = sim.listar_dispositivos()
-            if not dispositivos:
-                print("Nenhum dispositivo conectado.")
-            else:
-                print(f"{len(dispositivos)} dispositivo(s) conectado(s):\n")
-                for d in dispositivos:
-                    print(f"  - {d.nome:<12} {d.ip:<14} [{d.tipo:<6}]  MAC={d.mac}")
+                nome = input("Nome do PC (ex: PC1): ").strip()
+                setor = input("Nome do roteador de setor: ").strip()
 
-        elif opcao == "6":
-            origem = input("Origem (nome ou IP): ").strip()
-            destino = input("Destino (nome ou IP): ").strip()
-            arquivo = input("Nome do arquivo: ").strip()
-            unidade = pedir_unidade_tamanho()
-            if unidade is None:
-                print("\n[AVISO] Envio cancelado.")
-            else:
-                valor = pedir_numero_positivo(f"Tamanho em {unidade} (vazio para cancelar): ")
-                if valor is None:
-                    print("\n[AVISO] Envio cancelado.")
+                if tipo_pc == "2":
+                    host_real = input("IP físico do PC real (ex: 192.168.50.2 ou 127.0.0.1): ").strip()
+                    porta_real = pedir_porta()
+                    print("\n" + sim.conectar_pc(nome, setor, modo="REAL", host_real=host_real, porta_real=porta_real))
+                elif tipo_pc == "1":
+                    print("\n" + sim.conectar_pc(nome, setor, modo="SIMULADO"))
                 else:
-                    print("\n" + sim.enviar_arquivo(origem, destino, arquivo, valor, unidade))
+                    print("\n[ERRO] Tipo de PC inválido.")
 
-        elif opcao == "7":
-            print(sim.roteador.processar_proximo())
+            elif opcao == "4":
+                alvo = input("Nome ou IP do PC: ").strip()
+                print("\n" + sim.desconectar_pc(alvo))
 
-        elif opcao == "8":
-            for linha in sim.roteador.processar_lote(10):
-                print(linha)
+            elif opcao == "5":
+                dispositivos = sim.listar_dispositivos()
+                if not dispositivos:
+                    print("Nenhum dispositivo conectado.")
+                else:
+                    print(f"{len(dispositivos)} dispositivo(s) conectado(s):\n")
+                    for d in dispositivos:
+                        info_real = f"  REAL->{d.host_real}:{d.porta_real}" if d.modo == "REAL" else ""
+                        print(f"  - {d.nome:<12} {d.ip:<14} [{d.tipo:<6}]  MAC={d.mac}{info_real}")
 
-        elif opcao == "9":
-            logs = sim.roteador.processar_tudo()
-            if len(logs) <= 25:
-                for linha in logs:
+            elif opcao == "6":
+                print("Tipo de envio:")
+                print("  [1] Arquivo simulado")
+                print("  [2] Arquivo real (pasta transfer/)")
+                print("  [3] Mensagem de texto")
+                tipo_envio = input("Escolha (1-3): ").strip()
+
+                if tipo_envio not in ("1", "2", "3"):
+                    print("\n[ERRO] Tipo de envio inválido.")
+                else:
+                    origem = input("Origem (nome ou IP): ").strip()
+                    destino = input("Destino (nome ou IP): ").strip()
+
+                    if tipo_envio == "1":
+                        arquivo = input("Nome do arquivo: ").strip()
+                        unidade = pedir_unidade_tamanho()
+                        if unidade is None:
+                            print("\n[AVISO] Envio cancelado.")
+                        else:
+                            valor = pedir_numero_positivo(f"Tamanho em {unidade} (vazio para cancelar): ")
+                            if valor is None:
+                                print("\n[AVISO] Envio cancelado.")
+                            else:
+                                print("\n" + sim.enviar_arquivo(origem, destino, arquivo, valor, unidade))
+
+                    elif tipo_envio == "2":
+                        disponiveis = listar_arquivos_transfer()
+                        if not disponiveis:
+                            print("\n[AVISO] Nenhum arquivo encontrado na pasta transfer/.")
+                            print("Coloque o arquivo desejado em transfer/ e tente novamente.")
+                        else:
+                            print("\nArquivos disponíveis em transfer/:")
+                            for idx, nome_arq in enumerate(disponiveis, start=1):
+                                print(f"  [{idx}] {nome_arq}")
+                            escolha = input("Número ou nome do arquivo (vazio para cancelar): ").strip()
+                            if not escolha:
+                                print("\n[AVISO] Envio cancelado.")
+                            else:
+                                if escolha.isdigit() and 1 <= int(escolha) <= len(disponiveis):
+                                    nome_arq = disponiveis[int(escolha) - 1]
+                                else:
+                                    nome_arq = escolha
+                                print("\n" + sim.enviar_arquivo_real(origem, destino, nome_arq))
+
+                    elif tipo_envio == "3":
+                        texto = input("Digite a mensagem: ").strip()
+                        print("\n" + sim.enviar_mensagem(origem, destino, texto))
+
+            elif opcao == "7":
+                print(sim.roteador.processar_proximo())
+
+            elif opcao == "8":
+                for linha in sim.roteador.processar_lote(10):
                     print(linha)
-            else:
-                relevantes = [l for l in logs if not l.startswith("[EM TRÂNSITO]")]
-                print(f"Processados {len(logs)} pacotes da fila:\n")
-                for linha in relevantes:
-                    print(linha)
 
-        elif opcao == "10":
-            origem = input("Origem (nome ou IP): ").strip()
-            destino = input("Destino (nome ou IP): ").strip()
-            print("\n" + sim.roteador.ping(origem, destino))
+            elif opcao == "9":
+                logs = sim.roteador.processar_tudo()
+                if len(logs) <= 25:
+                    for linha in logs:
+                        print(linha)
+                else:
+                    relevantes = [l for l in logs if not l.startswith("[EM TRÂNSITO]")]
+                    print(f"Processados {len(logs)} pacotes da fila:\n")
+                    for linha in relevantes:
+                        print(linha)
 
-        elif opcao == "11":
-            alvo = input("Dispositivo (nome ou IP): ").strip()
-            dispositivo = sim.tabela_dispositivos.get(alvo)
-            if dispositivo is None:
-                print(f"\n[ERRO] Dispositivo '{alvo}' não encontrado.")
-            elif not dispositivo.caixa_entrada:
-                print(f"\nCaixa de entrada de {dispositivo.nome} está vazia.")
-            else:
-                print(f"\nCaixa de entrada de {dispositivo.nome} ({len(dispositivo.caixa_entrada)} arquivo(s)):\n")
-                for pacote in dispositivo.caixa_entrada:
-                    print(f"  - {pacote}")
+            elif opcao == "10":
+                origem = input("Origem (nome ou IP): ").strip()
+                destino = input("Destino (nome ou IP): ").strip()
+                print("\n" + sim.roteador.ping(origem, destino))
 
-        pausar()
+            elif opcao == "11":
+                alvo = input("Dispositivo (nome ou IP): ").strip()
+                dispositivo = sim.tabela_dispositivos.get(alvo)
+                if dispositivo is None:
+                    print(f"\n[ERRO] Dispositivo '{alvo}' não encontrado.")
+                elif not dispositivo.caixa_entrada:
+                    print(f"\nCaixa de entrada de {dispositivo.nome} está vazia.")
+                else:
+                    print(f"\nCaixa de entrada de {dispositivo.nome} ({len(dispositivo.caixa_entrada)} item(ns)):\n")
+                    for pacote in dispositivo.caixa_entrada:
+                        print(f"  - {pacote}")
+                        if pacote.eh_mensagem and pacote.payload is not None:
+                            texto = pacote.payload.decode("utf-8", errors="replace")
+                            print(f"    Mensagem: {texto}")
+                        if pacote.caminho_salvo:
+                            print(f"    Arquivo:  {pacote.caminho_salvo}")
+
+            pausar()
+    finally:
+        receptor.parar()
 
 
 if __name__ == "__main__":

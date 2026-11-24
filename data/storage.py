@@ -1,5 +1,6 @@
 """Persistência em JSON do estado da rede (dispositivos e pacotes)."""
 
+import base64
 import json
 import os
 
@@ -9,8 +10,8 @@ from structures.tree import NetworkNode
 CAMINHO_PADRAO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "estado_rede.json")
 
 
-def _serializar_pacote(pacote: Packet) -> dict:
-    return {
+def _serializar_pacote(pacote: Packet, incluir_payload_binario: bool = False) -> dict:
+    dados = {
         "id": pacote.id,
         "origem_ip": pacote.origem_ip,
         "destino_ip": pacote.destino_ip,
@@ -20,10 +21,24 @@ def _serializar_pacote(pacote: Packet) -> dict:
         "transmissao_id": pacote.transmissao_id,
         "seq": pacote.seq,
         "total_partes": pacote.total_partes,
+        "eh_mensagem": pacote.eh_mensagem,
+        "caminho_salvo": pacote.caminho_salvo,
     }
+    if pacote.payload is not None:
+        if pacote.eh_mensagem:
+            dados["mensagem"] = pacote.payload.decode("utf-8", errors="replace")
+        elif incluir_payload_binario:
+            dados["payload_b64"] = base64.b64encode(pacote.payload).decode("ascii")
+    return dados
 
 
 def _desserializar_pacote(dados: dict) -> Packet:
+    payload = None
+    if "mensagem" in dados:
+        payload = dados["mensagem"].encode("utf-8")
+    elif "payload_b64" in dados:
+        payload = base64.b64decode(dados["payload_b64"].encode("ascii"))
+
     pacote = Packet(
         origem_ip=dados["origem_ip"],
         destino_ip=dados["destino_ip"],
@@ -32,6 +47,9 @@ def _desserializar_pacote(dados: dict) -> Packet:
         transmissao_id=dados.get("transmissao_id"),
         seq=dados.get("seq", 1),
         total_partes=dados.get("total_partes", 1),
+        payload=payload,
+        eh_mensagem=dados.get("eh_mensagem", False),
+        caminho_salvo=dados.get("caminho_salvo"),
     )
     pacote.id = dados.get("id", pacote.id)
     pacote.ttl = dados.get("ttl", 16)
@@ -45,6 +63,9 @@ def _coletar_dispositivos(no: NetworkNode, nome_pai: str | None, lista: list[dic
         "ip": disp.ip,
         "tipo": disp.tipo,
         "mac": disp.mac,
+        "modo": disp.modo,
+        "host_real": disp.host_real,
+        "porta_real": disp.porta_real,
         "pai": nome_pai,
         "caixa_entrada": [_serializar_pacote(p) for p in disp.caixa_entrada],
     })
@@ -65,11 +86,14 @@ def salvar_estado(simulador, caminho: str = CAMINHO_PADRAO) -> str:
                 **pacote,
             })
 
-    fila = [_serializar_pacote(p) for p in simulador.roteador.fila_transmissao.to_list()]
+    fila = [
+        _serializar_pacote(p, incluir_payload_binario=True)
+        for p in simulador.roteador.fila_transmissao.to_list()
+    ]
 
     em_transito = {}
     for chave_tx, buffer in simulador.roteador.buffers_recepcao.to_list():
-        em_transito[chave_tx] = [_serializar_pacote(p) for p in buffer]
+        em_transito[chave_tx] = [_serializar_pacote(p, incluir_payload_binario=True) for p in buffer]
 
     dados = {
         "proximo_packet_id": Packet._contador_id,
@@ -102,7 +126,6 @@ def carregar_estado(simulador, caminho: str = CAMINHO_PADRAO) -> bool:
     if not dispositivos_salvos:
         return False
 
-    # Restaura o nó raiz (R_Core)
     raiz_dados = dispositivos_salvos[0]
     simulador.core.mac = raiz_dados.get("mac", simulador.core.mac)
     simulador.core.caixa_entrada = [
@@ -111,13 +134,15 @@ def carregar_estado(simulador, caminho: str = CAMINHO_PADRAO) -> bool:
 
     nos_por_nome = {simulador.core.nome: simulador.no_raiz}
 
-    # Reconstrói roteadores de setor e PCs mantendo a hierarquia
     for item in dispositivos_salvos[1:]:
         disp = Device(
             nome=item["nome"],
             ip=item["ip"],
             tipo=item["tipo"],
             mac=item.get("mac"),
+            modo=item.get("modo", "SIMULADO"),
+            host_real=item.get("host_real"),
+            porta_real=item.get("porta_real"),
         )
         disp.caixa_entrada = [
             _desserializar_pacote(p) for p in item.get("caixa_entrada", [])
@@ -128,17 +153,14 @@ def carregar_estado(simulador, caminho: str = CAMINHO_PADRAO) -> bool:
         nos_por_nome[disp.nome] = no
         simulador._indexar_dispositivo(disp)
 
-    # Restaura fila de transmissão
     for p_dados in dados.get("fila_transmissao", []):
         simulador.roteador.fila_transmissao.enqueue(_desserializar_pacote(p_dados))
 
-    # Restaura pacotes em trânsito (buffer de recepção)
     for chave_tx, lista_pacotes in dados.get("em_transito", {}).items():
         buffer = [_desserializar_pacote(p) for p in lista_pacotes]
         if buffer:
             simulador.roteador.buffers_recepcao.insert(chave_tx, buffer)
 
-    # Restaura pool DHCP e contador de IDs
     simulador.dhcp._ips_liberados = list(dados.get("dhcp_ips_liberados", []))
     Packet._contador_id = max(Packet._contador_id, dados.get("proximo_packet_id", 0))
     return True

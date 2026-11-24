@@ -4,22 +4,37 @@ import random
 
 
 class Device:
-    """Dispositivo da rede (roteador ou PC)."""
+    """Dispositivo da rede (roteador ou PC, simulado ou real)."""
 
     TIPOS_VALIDOS = ("ROUTER", "PC")
+    MODOS_VALIDOS = ("SIMULADO", "REAL")
 
-    def __init__(self, nome: str, ip: str, tipo: str = "PC", mac: str | None = None):
+    def __init__(
+        self,
+        nome: str,
+        ip: str,
+        tipo: str = "PC",
+        mac: str | None = None,
+        modo: str = "SIMULADO",
+        host_real: str | None = None,
+        porta_real: int | None = None,
+    ):
         if not nome or not nome.strip():
             raise ValueError("Nome do dispositivo não pode ser vazio.")
         if not ip or not ip.strip():
             raise ValueError("IP do dispositivo não pode ser vazio.")
         if tipo not in Device.TIPOS_VALIDOS:
             raise ValueError(f"Tipo de dispositivo inválido: '{tipo}'. Use 'ROUTER' ou 'PC'.")
+        if modo not in Device.MODOS_VALIDOS:
+            raise ValueError(f"Modo inválido: '{modo}'. Use 'SIMULADO' ou 'REAL'.")
 
         self.nome = nome.strip()
         self.ip = ip.strip()
         self.tipo = tipo
         self.mac = mac or Device._gerar_mac_aleatorio()
+        self.modo = modo
+        self.host_real = host_real.strip() if host_real else None
+        self.porta_real = porta_real
         self.caixa_entrada: list = []
 
     @staticmethod
@@ -27,6 +42,8 @@ class Device:
         return ":".join(f"{random.randint(0, 255):02X}" for _ in range(6))
 
     def __repr__(self) -> str:
+        if self.modo == "REAL" and self.host_real:
+            return f"<Device {self.nome} | {self.ip} | {self.tipo} REAL {self.host_real}:{self.porta_real}>"
         return f"<Device {self.nome} | {self.ip} | {self.tipo}>"
 
 
@@ -73,7 +90,7 @@ def calcular_qtd_blocos(tamanho_bytes: int, mtu: int = MTU_BYTES) -> int:
 
 
 class Packet:
-    """Pacote de dados transmitido entre dois dispositivos."""
+    """Pacote de dados (simulado, arquivo real ou mensagem) transmitido na rede."""
 
     _contador_id = 0
 
@@ -86,6 +103,9 @@ class Packet:
         transmissao_id: int | None = None,
         seq: int = 1,
         total_partes: int = 1,
+        payload: bytes | None = None,
+        eh_mensagem: bool = False,
+        caminho_salvo: str | None = None,
     ):
         if not arquivo or not arquivo.strip():
             raise ValueError("Nome do arquivo do pacote não pode ser vazio.")
@@ -104,6 +124,9 @@ class Packet:
         self.transmissao_id = transmissao_id
         self.seq = seq
         self.total_partes = total_partes
+        self.payload = payload
+        self.eh_mensagem = eh_mensagem
+        self.caminho_salvo = caminho_salvo
 
     def dividir(self, mtu: int = MTU_BYTES) -> list["Packet"]:
         """Divide este pacote em pacotes de no máximo `mtu` bytes (padrão 1500 B)."""
@@ -116,8 +139,27 @@ class Packet:
 
         tx_id = self.id
         partes: list[Packet] = []
-        restante = self.tamanho
 
+        if self.payload is not None:
+            for i in range(1, qtd + 1):
+                inicio = (i - 1) * mtu
+                fatia = self.payload[inicio:inicio + mtu]
+                partes.append(
+                    Packet(
+                        origem_ip=self.origem_ip,
+                        destino_ip=self.destino_ip,
+                        arquivo=self.arquivo,
+                        tamanho=len(fatia),
+                        transmissao_id=tx_id,
+                        seq=i,
+                        total_partes=qtd,
+                        payload=fatia,
+                        eh_mensagem=self.eh_mensagem,
+                    )
+                )
+            return partes
+
+        restante = self.tamanho
         for i in range(1, qtd + 1):
             tam_parte = min(mtu, restante)
             restante -= tam_parte
@@ -130,6 +172,7 @@ class Packet:
                     transmissao_id=tx_id,
                     seq=i,
                     total_partes=qtd,
+                    eh_mensagem=self.eh_mensagem,
                 )
             )
         return partes
@@ -144,6 +187,10 @@ class Packet:
         tamanho_total = sum(p.tamanho for p in partes_ordenadas)
         menor_ttl = min(p.ttl for p in partes_ordenadas)
 
+        payload_unido = None
+        if primeiro.payload is not None:
+            payload_unido = b"".join(p.payload for p in partes_ordenadas if p.payload is not None)
+
         pacote_final = cls(
             origem_ip=primeiro.origem_ip,
             destino_ip=primeiro.destino_ip,
@@ -152,6 +199,8 @@ class Packet:
             transmissao_id=primeiro.transmissao_id,
             seq=1,
             total_partes=1,
+            payload=payload_unido,
+            eh_mensagem=primeiro.eh_mensagem,
         )
         pacote_final.ttl = menor_ttl
         return pacote_final
@@ -163,8 +212,9 @@ class Packet:
                 f"[Pacote {self.seq}/{self.total_partes} | {self.arquivo} | "
                 f"{tam_str} | {self.origem_ip}->{self.destino_ip}]"
             )
+        prefixo = "Msg" if self.eh_mensagem else "Pacote"
         return (
-            f"[Pacote#{self.id} {self.arquivo} | {tam_str} | "
+            f"[{prefixo}#{self.id} {self.arquivo} | {tam_str} | "
             f"{self.origem_ip}->{self.destino_ip} | TTL={self.ttl}]"
         )
 
@@ -172,21 +222,21 @@ class Packet:
 if __name__ == "__main__":
     core = Device("R_Core", "10.0.0.1", tipo="ROUTER")
     pc1 = Device("PC1", "10.0.0.4", tipo="PC")
+    pc_real = Device("PC_Real", "10.0.0.5", tipo="PC", modo="REAL", host_real="127.0.0.1", porta_real=5000)
     assert core.caixa_entrada == []
+    assert pc_real.modo == "REAL"
     assert len(pc1.mac.split(":")) == 6
 
-    tam_kb = converter_para_bytes(50, "KB")
-    pacote_inicial = Packet("10.0.0.4", "10.0.0.5", "relatorio.pdf", tam_kb)
-    partes = pacote_inicial.dividir()
-    del pacote_inicial
-
-    assert len(partes) == calcular_qtd_blocos(tam_kb)
-    assert all(isinstance(p, Packet) and p.tamanho <= MTU_BYTES for p in partes)
-    assert sum(p.tamanho for p in partes) == tam_kb
-
+    # Teste com arquivo real (bytes)
+    conteudo_real = b"ABCD1234" * 500
+    pacote_real = Packet("10.0.0.4", "10.0.0.5", "teste.bin", len(conteudo_real), payload=conteudo_real)
+    partes = pacote_real.dividir()
+    del pacote_real
+    assert len(partes) == calcular_qtd_blocos(len(conteudo_real))
+    assert all(p.tamanho <= MTU_BYTES and p.payload is not None for p in partes)
     unido = Packet.unir(partes)
-    assert unido.tamanho == tam_kb
-    assert unido.total_partes == 1
+    assert unido.payload == conteudo_real
+    assert unido.tamanho == len(conteudo_real)
 
     assert calcular_qtd_blocos(500) == 1
     assert calcular_qtd_blocos(1500) == 1

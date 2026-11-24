@@ -1,5 +1,11 @@
 """Árvore N-ária da topologia da rede e núcleo de roteamento."""
 
+from core.sockets import (
+    enviar_pacote_real,
+    enviar_ping_real,
+    salvar_arquivo_pc_simulado,
+    salvar_mensagem_pc_simulado,
+)
 from .queue import Queue
 from .hash_table import HashTable
 from .sorting import ordenar_pacotes_por_sequencia
@@ -135,7 +141,12 @@ class RouterTree:
     ) -> None:
         conector = "└── " if eh_ultimo else "├── "
         disp = no.dispositivo
-        tag = "[ROOT]" if no == self.raiz else f"[{disp.tipo}]"
+        if no == self.raiz:
+            tag = "[ROOT]"
+        elif getattr(disp, "modo", "SIMULADO") == "REAL":
+            tag = f"[PC REAL {disp.host_real}:{disp.porta_real}]"
+        else:
+            tag = f"[{disp.tipo}]"
 
         if no == self.raiz:
             linhas.append(f"{disp.nome} ({disp.ip}) {tag}")
@@ -191,9 +202,37 @@ class Router:
 
         rota_str = " -> ".join(f"{no.dispositivo.nome} ({no.dispositivo.ip})" for no in caminho)
         saltos = len(caminho) - 1
-        return (
+        saida = (
             f"[PING OK] {origem.nome} ({origem.ip}) -> {destino.nome} ({destino.ip})\n"
             f"  Rota ({saltos} saltos): {rota_str}"
+        )
+
+        if getattr(destino, "modo", "SIMULADO") == "REAL" and destino.host_real:
+            ok, ms, detalhe = enviar_ping_real(destino.host_real, destino.porta_real)
+            if ok:
+                saida += f"\n  Rede real ({destino.host_real}:{destino.porta_real}): PONG em {ms:.1f} ms"
+            else:
+                saida += f"\n  Rede real ({destino.host_real}:{destino.porta_real}): sem resposta ({detalhe})"
+
+        return saida
+
+    def _entregar_pacote_simulado(self, pacote, destino, nome_origem: str, rota_str: str, saltos: int) -> str:
+        extra = ""
+        if pacote.payload is not None:
+            if getattr(pacote, "eh_mensagem", False):
+                texto = pacote.payload.decode("utf-8", errors="replace")
+                caminho = salvar_mensagem_pc_simulado(destino.nome, nome_origem, pacote.arquivo, texto)
+            else:
+                caminho = salvar_arquivo_pc_simulado(destino.nome, pacote.arquivo, pacote.payload)
+            pacote.caminho_salvo = caminho
+            extra = f"\n  Salvo em: {caminho}"
+
+        destino.caixa_entrada.append(pacote)
+        return (
+            f"[ENTREGUE] {pacote} | {nome_origem} -> {destino.nome}\n"
+            f"  Rota ({saltos} saltos): {rota_str} | "
+            f"Entregue na caixa de entrada de {destino.nome} | Fila: {self.fila_transmissao.size()}"
+            f"{extra}"
         )
 
     def processar_proximo(self) -> str:
@@ -228,12 +267,52 @@ class Router:
         nome_origem = origem.nome if origem else pacote.origem_ip
         rota_str = " -> ".join(no.dispositivo.nome for no in caminho)
 
-        if pacote.total_partes == 1:
-            destino.caixa_entrada.append(pacote)
-            return (
-                f"[ENTREGUE] {pacote} | {nome_origem} -> {destino.nome}\n"
-                f"  Rota ({saltos} saltos): {rota_str} | Fila: {self.fila_transmissao.size()}"
+        # Destino real: transmite cada pacote individualmente via UDP
+        if getattr(destino, "modo", "SIMULADO") == "REAL" and destino.host_real:
+            ok, detalhe = enviar_pacote_real(
+                destino.host_real,
+                destino.porta_real,
+                pacote,
+                nome_origem,
+                destino.nome,
             )
+            if not ok:
+                return (
+                    f"[ERRO UDP] Falha ao enviar {pacote} para {destino.nome} "
+                    f"({destino.host_real}:{destino.porta_real}): {detalhe}"
+                )
+
+            if pacote.total_partes == 1:
+                destino.caixa_entrada.append(pacote)
+                return (
+                    f"[ENTREGUE UDP] {pacote} | {nome_origem} -> {destino.nome}\n"
+                    f"  Rota ({saltos} saltos): {rota_str} | {detalhe} | Fila: {self.fila_transmissao.size()}"
+                )
+
+            chave_tx = f"{destino.ip}:{pacote.transmissao_id}"
+            buffer = self.buffers_recepcao.get(chave_tx)
+            if buffer is None:
+                buffer = []
+                self.buffers_recepcao.insert(chave_tx, buffer)
+            buffer.append(pacote)
+
+            if len(buffer) < pacote.total_partes:
+                return (
+                    f"[UDP ENVIADO] {pacote} | {nome_origem} -> {destino.nome}\n"
+                    f"  Rota ({saltos} saltos): {rota_str} | {detalhe} | Fila: {self.fila_transmissao.size()}"
+                )
+
+            self.buffers_recepcao.remove(chave_tx)
+            ordenar_pacotes_por_sequencia(buffer)
+            pacote_unido = type(pacote).unir(buffer)
+            destino.caixa_entrada.append(pacote_unido)
+            return (
+                f"[ENTREGUE UDP] {pacote_unido} | {nome_origem} -> {destino.nome}\n"
+                f"  Rota ({saltos} saltos): {rota_str} | {detalhe} | Fila: {self.fila_transmissao.size()}"
+            )
+
+        if pacote.total_partes == 1:
+            return self._entregar_pacote_simulado(pacote, destino, nome_origem, rota_str, saltos)
 
         chave_tx = f"{destino.ip}:{pacote.transmissao_id}"
         buffer = self.buffers_recepcao.get(chave_tx)
@@ -250,18 +329,11 @@ class Router:
                 f"Recebidos: {len(buffer)}/{pacote.total_partes} | Fila: {self.fila_transmissao.size()}"
             )
 
-        # Reordena os pacotes recebidos e reconstrói o pacote original
         self.buffers_recepcao.remove(chave_tx)
         ordenar_pacotes_por_sequencia(buffer)
 
         pacote_unido = type(pacote).unir(buffer)
-        destino.caixa_entrada.append(pacote_unido)
-
-        return (
-            f"[ENTREGUE] {pacote_unido} | {nome_origem} -> {destino.nome}\n"
-            f"  Rota ({saltos} saltos): {rota_str} | "
-            f"Entregue na caixa de entrada de {destino.nome} | Fila: {self.fila_transmissao.size()}"
-        )
+        return self._entregar_pacote_simulado(pacote_unido, destino, nome_origem, rota_str, saltos)
 
     def processar_lote(self, quantidade: int) -> list[str]:
         """Processa até `quantidade` pacotes da fila."""
