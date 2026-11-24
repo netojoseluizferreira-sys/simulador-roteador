@@ -13,9 +13,9 @@ Simulador híbrido de rede e roteamento de pacotes via terminal desenvolvido em 
 
 | Estrutura / Algoritmo | Arquivo | Aplicação no Simulador |
 | :--- | :--- | :--- |
-| **Tabela Hash** (encadeamento separado) | `structures/hash_table.py` | Indexação $O(1)$ médio de dispositivos (`IP`/`Nome` $\rightarrow$ `Device`), rastreamento de predecessores na BFS e buffers de recepção de pacotes. |
-| **Árvore N-ária Enraizada + BFS** | `structures/tree.py` | Representação da topologia física da rede (`R_Core` $\rightarrow$ setores $\rightarrow$ `PCs`) e cálculo de rotas completas entre origem e destino via BFS + menor ancestral comum (LCA). |
-| **Fila Encadeada com Nós Sentinelas** | `structures/queue.py` | Fila de transmissão de pacotes em $O(1)$ e fila auxiliar da BFS. |
+| **Tabela Hash** (encadeamento separado) | `structures/hash_table.py` | Indexação O(1) médio de dispositivos (`IP`/`Nome` --> `Device`), rastreamento de predecessores na BFS e buffers de recepção de pacotes. |
+| **Árvore N-ária Enraizada + BFS** | `structures/tree.py` | Representação da topologia física da rede (`R_Core` --> setores --> `PCs`) e cálculo de rotas completas entre origem e destino via BFS + menor ancestral comum (LCA). |
+| **Fila Encadeada com Nós Sentinelas** | `structures/queue.py` | Fila de transmissão de pacotes em O(1) e fila auxiliar da BFS. |
 | **QuickSort Híbrido (3 vias)** | `structures/sorting.py` | Reordenação de pacotes recebidos fora de ordem (por sequência) e ordenação de dispositivos por IP, combinando **Mediana das Medianas**, **particionamento em 3 vias** e **Insertion Sort** para partições de até 32 elementos. |
 | **Busca Linear + Hash (DHCP)** | `core/dhcp.py` | Alocação dinâmica e reaproveitamento de endereços IP livres para novos dispositivos. |
 

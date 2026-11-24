@@ -45,6 +45,8 @@ class Simulador:
         nome = nome.strip()
         if not nome:
             return "[ERRO] Nome do roteador de setor não pode ser vazio."
+        if "." in nome:
+            return "[ERRO] Nome do roteador não pode conter '.' (evita conflito com IPs)."
         if self.tabela_dispositivos.get(nome) is not None:
             return f"[ERRO] Já existe um dispositivo chamado '{nome}'."
 
@@ -70,6 +72,8 @@ class Simulador:
         nome_setor = nome_setor.strip()
         if not nome:
             return "[ERRO] Nome do PC não pode ser vazio."
+        if "." in nome:
+            return "[ERRO] Nome do PC não pode conter '.' (evita conflito com IPs)."
         if not nome_setor:
             return "[ERRO] Nome do setor não pode ser vazio."
         if self.tabela_dispositivos.get(nome) is not None:
@@ -545,12 +549,12 @@ def executar_cli() -> None:
                             print(f"    Arquivo:  {pacote.caminho_salvo}")
 
             pausar()
+    except (KeyboardInterrupt, EOFError):
+        salvar_estado(sim)
+        print("\nSimulador interrompido. Estado salvo em data/estado_rede.json.")
     finally:
         receptor.parar()
 
 
 if __name__ == "__main__":
-    try:
-        executar_cli()
-    except (KeyboardInterrupt, EOFError):
-        print("\nSimulador interrompido.")
+    executar_cli()

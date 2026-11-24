@@ -21,6 +21,8 @@ class Device:
     ):
         if not nome or not nome.strip():
             raise ValueError("Nome do dispositivo não pode ser vazio.")
+        if "." in nome:
+            raise ValueError("Nome do dispositivo não pode conter '.' (evita conflito com IPs).")
         if not ip or not ip.strip():
             raise ValueError("IP do dispositivo não pode ser vazio.")
         if tipo not in Device.TIPOS_VALIDOS:
@@ -134,7 +136,7 @@ class Packet:
         if qtd > MAX_PACOTES_ENVIO:
             limite_str = formatar_tamanho(MAX_PACOTES_ENVIO * mtu)
             raise ValueError(
-                f"Arquivo excede o limite de simulação para pacotes de {mtu} B (máximo: {limite_str})."
+                f"Arquivo excede o limite de envio para pacotes de {mtu} B (máximo: {limite_str})."
             )
 
         tx_id = self.id
