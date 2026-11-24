@@ -116,7 +116,7 @@ if __name__ == "__main__":
     quicksort_hibrido(todos_iguais)
     assert todos_iguais == [7] * 2000
 
-    pacote = Packet("10.0.0.10", "10.0.0.11", "video.mp4", converter_para_bytes(50, "MB"))
+    pacote = Packet("10.0.0.10", "10.0.0.11", "video.mp4", converter_para_bytes(100, "KB"))
     partes = pacote.dividir()
     del pacote
     random.shuffle(partes)

@@ -263,6 +263,18 @@ class Router:
             f"Entregue na caixa de entrada de {destino.nome} | Fila: {self.fila_transmissao.size()}"
         )
 
+    def processar_lote(self, quantidade: int) -> list[str]:
+        """Processa até `quantidade` pacotes da fila."""
+        if self.fila_transmissao.is_empty():
+            return ["[FILA VAZIA] Nenhum pacote aguardando transmissão."]
+
+        logs = []
+        for _ in range(quantidade):
+            if self.fila_transmissao.is_empty():
+                break
+            logs.append(self.processar_proximo())
+        return logs
+
     def processar_tudo(self) -> list[str]:
         """Processa todos os pacotes pendentes na fila."""
         if self.fila_transmissao.is_empty():
@@ -311,15 +323,18 @@ if __name__ == "__main__":
     ]
 
     roteador = Router(arvore, ht)
-    tam_video = converter_para_bytes(50, "MB")
-    pacote_inicial = Packet("10.0.0.4", "10.0.0.5", "video.mp4", tam_video)
+    tam_arq = converter_para_bytes(25, "KB")
+    pacote_inicial = Packet("10.0.0.4", "10.0.0.5", "aula.pdf", tam_arq)
     partes = pacote_inicial.dividir()
     del pacote_inicial
     random.shuffle(partes)
     roteador.enfileirar_pacotes(partes)
+
+    logs_10 = roteador.processar_lote(10)
+    assert len(logs_10) == 10
     roteador.processar_tudo()
 
     assert len(dev_pc2.caixa_entrada) == 1
-    assert dev_pc2.caixa_entrada[0].tamanho == tam_video
+    assert dev_pc2.caixa_entrada[0].tamanho == tam_arq
     assert dev_pc2.caixa_entrada[0].ttl == 12
     print("tree.py OK")

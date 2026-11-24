@@ -6,6 +6,7 @@ import sys
 
 from core.models import Device, Packet, converter_para_bytes, formatar_tamanho
 from core.dhcp import DHCPServer
+from data.storage import carregar_estado, salvar_estado
 from structures.hash_table import HashTable
 from structures.tree import NetworkNode, RouterTree, Router
 from structures.sorting import quicksort_hibrido
@@ -113,7 +114,7 @@ class Simulador:
         valor_tamanho: float,
         unidade: str,
     ) -> str:
-        """Instancia o pacote do arquivo, divide em pacotes menores e envia para a fila."""
+        """Instancia o pacote do arquivo, divide em pacotes de até 1500 B e envia para a fila."""
         arquivo = arquivo.strip()
         if not arquivo:
             return "[ERRO] Nome do arquivo não pode ser vazio."
@@ -142,10 +143,19 @@ class Simulador:
         if len(partes) > 1:
             random.shuffle(partes)
 
-        linhas = [f"[OK] Arquivo '{arquivo}' ({formatar_tamanho(tamanho_bytes)}) enviado para a fila:"]
         for pacote in partes:
             self.roteador.fila_transmissao.enqueue(pacote)
-            linhas.append(f"  Pacote {pacote.seq} enfileirado ({formatar_tamanho(pacote.tamanho)})")
+
+        linhas = [f"[OK] Arquivo '{arquivo}' ({formatar_tamanho(tamanho_bytes)}) enviado para a fila:"]
+        if len(partes) <= 20:
+            for pacote in partes:
+                linhas.append(f"  Pacote {pacote.seq} enfileirado ({formatar_tamanho(pacote.tamanho)})")
+        else:
+            for pacote in partes[:10]:
+                linhas.append(f"  Pacote {pacote.seq} enfileirado ({formatar_tamanho(pacote.tamanho)})")
+            linhas.append(f"  ... (+{len(partes) - 15} pacotes enfileirados)")
+            for pacote in partes[-5:]:
+                linhas.append(f"  Pacote {pacote.seq} enfileirado ({formatar_tamanho(pacote.tamanho)})")
 
         linhas.append(f"  Total na fila: {self.roteador.fila_transmissao.size()}")
         return "\n".join(linhas)
@@ -164,10 +174,11 @@ TITULOS_OPCOES = {
     "4": "DESCONECTAR PC",
     "5": "DISPOSITIVOS CONECTADOS",
     "6": "ENVIAR ARQUIVO",
-    "7": "PROCESSAR PRÓXIMO PACOTE",
-    "8": "PROCESSAR TODOS OS PACOTES",
-    "9": "PING",
-    "10": "CAIXA DE ENTRADA",
+    "7": "PROCESSAR 1 PACOTE",
+    "8": "PROCESSAR 10 PACOTES",
+    "9": "PROCESSAR TODOS OS PACOTES",
+    "10": "PING",
+    "11": "CAIXA DE ENTRADA",
 }
 
 OPCOES_UNIDADE = {
@@ -190,10 +201,11 @@ MENU = """------------------------------- MENU ---------------------------------
  [4]  Desconectar PC
  [5]  Listar dispositivos conectados
  [6]  Enviar arquivo
- [7]  Processar próximo pacote da fila
- [8]  Processar todos os pacotes da fila
- [9]  Ping
- [10] Ver caixa de entrada
+ [7]  Processar 1 pacote da fila
+ [8]  Processar 10 pacotes da fila
+ [9]  Processar todos os pacotes da fila
+ [10] Ping
+ [11] Ver caixa de entrada
  [0]  Sair
 --------------------------------------------------------------------------"""
 
@@ -278,6 +290,7 @@ def pedir_numero_positivo(mensagem: str) -> float | None:
 def executar_cli() -> None:
     configurar_terminal()
     sim = Simulador()
+    carregar_estado(sim)
 
     while True:
         limpar_tela()
@@ -287,8 +300,9 @@ def executar_cli() -> None:
         opcao = input("simulador@R_Core:~$ ").strip()
 
         if opcao == "0":
+            salvar_estado(sim)
             limpar_tela()
-            print("Encerrando o simulador.")
+            print("Estado salvo em data/estado_rede.json. Encerrando o simulador.")
             break
 
         if opcao not in TITULOS_OPCOES:
@@ -342,15 +356,26 @@ def executar_cli() -> None:
             print(sim.roteador.processar_proximo())
 
         elif opcao == "8":
-            for linha in sim.roteador.processar_tudo():
+            for linha in sim.roteador.processar_lote(10):
                 print(linha)
 
         elif opcao == "9":
+            logs = sim.roteador.processar_tudo()
+            if len(logs) <= 25:
+                for linha in logs:
+                    print(linha)
+            else:
+                relevantes = [l for l in logs if not l.startswith("[EM TRÂNSITO]")]
+                print(f"Processados {len(logs)} pacotes da fila:\n")
+                for linha in relevantes:
+                    print(linha)
+
+        elif opcao == "10":
             origem = input("Origem (nome ou IP): ").strip()
             destino = input("Destino (nome ou IP): ").strip()
             print("\n" + sim.roteador.ping(origem, destino))
 
-        elif opcao == "10":
+        elif opcao == "11":
             alvo = input("Dispositivo (nome ou IP): ").strip()
             dispositivo = sim.tabela_dispositivos.get(alvo)
             if dispositivo is None:

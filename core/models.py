@@ -61,23 +61,15 @@ def formatar_tamanho(tamanho_bytes: int) -> str:
     return f"{tamanho_bytes} B"
 
 
-def calcular_qtd_blocos(tamanho_bytes: int) -> int:
-    """Calcula a quantidade de blocos de forma proporcional ao tamanho do arquivo."""
-    if tamanho_bytes <= 1:
+MTU_BYTES = 1500
+MAX_PACOTES_ENVIO = 50_000
+
+
+def calcular_qtd_blocos(tamanho_bytes: int, mtu: int = MTU_BYTES) -> int:
+    """Calcula a quantidade de pacotes respeitando o limite máximo de 1500 bytes por pacote."""
+    if tamanho_bytes <= 0:
         return 1
-    if tamanho_bytes < 1024:
-        return min(tamanho_bytes, 4)
-    if tamanho_bytes < 1024 ** 2:
-        kb = tamanho_bytes / 1024
-        return min(10, max(5, 5 + int(kb // 200)))
-    if tamanho_bytes < 1024 ** 3:
-        mb = tamanho_bytes / (1024 ** 2)
-        return min(18, max(10, 10 + int(mb // 100)))
-    if tamanho_bytes < 1024 ** 4:
-        gb = tamanho_bytes / (1024 ** 3)
-        return min(30, max(18, 18 + int(gb // 80)))
-    tb = tamanho_bytes / (1024 ** 4)
-    return min(50, max(32, 32 + int(tb * 2)))
+    return (tamanho_bytes + mtu - 1) // mtu
 
 
 class Packet:
@@ -113,15 +105,22 @@ class Packet:
         self.seq = seq
         self.total_partes = total_partes
 
-    def dividir(self) -> list["Packet"]:
-        """Divide este pacote em pacotes menores conforme o tamanho do arquivo."""
-        qtd = calcular_qtd_blocos(self.tamanho)
-        tx_id = self.id
-        base, resto = divmod(self.tamanho, qtd)
+    def dividir(self, mtu: int = MTU_BYTES) -> list["Packet"]:
+        """Divide este pacote em pacotes de no máximo `mtu` bytes (padrão 1500 B)."""
+        qtd = calcular_qtd_blocos(self.tamanho, mtu)
+        if qtd > MAX_PACOTES_ENVIO:
+            limite_str = formatar_tamanho(MAX_PACOTES_ENVIO * mtu)
+            raise ValueError(
+                f"Arquivo excede o limite de simulação para pacotes de {mtu} B (máximo: {limite_str})."
+            )
 
+        tx_id = self.id
         partes: list[Packet] = []
+        restante = self.tamanho
+
         for i in range(1, qtd + 1):
-            tam_parte = base + (1 if i <= resto else 0)
+            tam_parte = min(mtu, restante)
+            restante -= tam_parte
             partes.append(
                 Packet(
                     origem_ip=self.origem_ip,
@@ -176,23 +175,23 @@ if __name__ == "__main__":
     assert core.caixa_entrada == []
     assert len(pc1.mac.split(":")) == 6
 
-    tam_mb = converter_para_bytes(50, "MB")
-    pacote_inicial = Packet("10.0.0.4", "10.0.0.5", "video.mp4", tam_mb)
+    tam_kb = converter_para_bytes(50, "KB")
+    pacote_inicial = Packet("10.0.0.4", "10.0.0.5", "relatorio.pdf", tam_kb)
     partes = pacote_inicial.dividir()
     del pacote_inicial
 
-    assert len(partes) == calcular_qtd_blocos(tam_mb)
-    assert all(isinstance(p, Packet) for p in partes)
-    assert sum(p.tamanho for p in partes) == tam_mb
+    assert len(partes) == calcular_qtd_blocos(tam_kb)
+    assert all(isinstance(p, Packet) and p.tamanho <= MTU_BYTES for p in partes)
+    assert sum(p.tamanho for p in partes) == tam_kb
 
     unido = Packet.unir(partes)
-    assert unido.tamanho == tam_mb
+    assert unido.tamanho == tam_kb
     assert unido.total_partes == 1
 
-    # Escala de blocos conforme tamanho
-    assert calcular_qtd_blocos(500) < calcular_qtd_blocos(converter_para_bytes(50, "MB"))
-    assert calcular_qtd_blocos(converter_para_bytes(50, "MB")) < calcular_qtd_blocos(converter_para_bytes(2, "GB"))
-    assert calcular_qtd_blocos(converter_para_bytes(2, "GB")) < calcular_qtd_blocos(converter_para_bytes(1, "TB"))
+    assert calcular_qtd_blocos(500) == 1
+    assert calcular_qtd_blocos(1500) == 1
+    assert calcular_qtd_blocos(1501) == 2
+    assert calcular_qtd_blocos(5000) == 4
 
     pc1.caixa_entrada.append(unido)
     assert len(pc1.caixa_entrada) == 1
