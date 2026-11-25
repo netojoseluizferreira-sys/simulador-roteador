@@ -142,6 +142,7 @@ def enviar_pacote_real(
         "destino": nome_destino,
         "arquivo": pacote.arquivo,
         "tamanho": pacote.tamanho,
+        "tamanho_total": getattr(pacote, "tamanho_total", pacote.tamanho),
         "transmissao_id": pacote.transmissao_id or pacote.id,
         "seq": pacote.seq,
         "total_partes": pacote.total_partes,
@@ -234,6 +235,7 @@ class ReceptorSimuladorUDP:
                 total_partes = meta.get("total_partes", 1)
                 eh_msg = meta.get("eh_mensagem", False)
                 tam = meta.get("tamanho", len(payload))
+                tam_total = meta.get("tamanho_total", tam * total_partes)
 
                 chave_tx = f"{addr[0]}:{tx_id}"
                 recebidos = buffers.get(chave_tx)
@@ -244,8 +246,14 @@ class ReceptorSimuladorUDP:
                 if not any(item[0] == seq for item in recebidos):
                     recebidos.append((seq, payload, tam))
 
+                bytes_rec = sum(item[2] for item in recebidos)
+                pct = min(100.0, (bytes_rec / tam_total) * 100) if tam_total > 0 else 100.0
+
                 if len(recebidos) < total_partes:
-                    detalhe = f"Pacote {seq}/{total_partes} recebido ({len(recebidos)}/{total_partes})"
+                    detalhe = (
+                        f"Pacote {seq} recebido | {len(recebidos)}/{total_partes} pacotes "
+                        f"({pct:.1f}%) | {formatar_tamanho(bytes_rec)} / {formatar_tamanho(tam_total)}"
+                    )
                     self._sock.sendto(_empacotar_datagrama({"status": "OK", "detalhe": detalhe}), addr)
                     continue
 
@@ -329,8 +337,7 @@ def iniciar_servidor_pc_real(
                     eh_msg = meta.get("eh_mensagem", False)
                     simulado = meta.get("simulado", False)
                     tam = meta.get("tamanho", len(payload))
-
-                    print(f"\n[UDP] Pacote {seq}/{total_partes} | '{nome_arq}' ({tam} B) de {origem}")
+                    tam_total_meta = meta.get("tamanho_total", tam * total_partes)
 
                     chave_tx = f"{addr[0]}:{tx_id}"
                     recebidos = buffers.get(chave_tx)
@@ -341,8 +348,19 @@ def iniciar_servidor_pc_real(
                     if not any(item[0] == seq for item in recebidos):
                         recebidos.append((seq, payload, tam))
 
+                    bytes_rec = sum(item[2] for item in recebidos)
+                    pct = min(100.0, (bytes_rec / tam_total_meta) * 100) if tam_total_meta > 0 else 100.0
+                    print(
+                        f"\n[UDP] Pacote {seq} de '{nome_arq}' ({formatar_tamanho(tam)}) de {origem} | "
+                        f"{len(recebidos)}/{total_partes} pacotes ({pct:.1f}%) | "
+                        f"{formatar_tamanho(bytes_rec)} / {formatar_tamanho(tam_total_meta)}"
+                    )
+
                     if len(recebidos) < total_partes:
-                        detalhe = f"Pacote {seq}/{total_partes} recebido ({len(recebidos)}/{total_partes})"
+                        detalhe = (
+                            f"Pacote {seq} confirmado ({len(recebidos)}/{total_partes} - "
+                            f"{pct:.1f}% - {formatar_tamanho(bytes_rec)} / {formatar_tamanho(tam_total_meta)})"
+                        )
                         servidor.sendto(_empacotar_datagrama({"status": "OK", "detalhe": detalhe}), addr)
                         continue
 
@@ -388,20 +406,31 @@ def _enviar_para_simulador(
     pacote_inicial: Packet,
 ) -> None:
     """Divide o pacote em <= 1500 B, embaralha e envia via UDP para o simulador."""
+    tam_total = pacote_inicial.tamanho
+    tam_total_str = formatar_tamanho(tam_total)
     partes = pacote_inicial.dividir()
     del pacote_inicial
     if len(partes) > 1:
         random.shuffle(partes)
 
+    total_partes = len(partes)
+    bytes_enviados = 0
+
     for idx, parte in enumerate(partes, start=1):
         ok, detalhe = enviar_pacote_real(host_sim, porta_sim, parte, nome_local, destino_sim)
         if not ok:
-            print(f"[ERRO] Falha no pacote {parte.seq}/{parte.total_partes}: {detalhe}")
+            print(f"[ERRO] Falha no pacote {parte.seq}/{total_partes}: {detalhe}")
             return
-        if len(partes) <= 20 or idx <= 10 or idx == len(partes):
-            print(f"  Pacote {parte.seq}/{parte.total_partes} enviado ({formatar_tamanho(parte.tamanho)}) -> {detalhe}")
+        bytes_enviados += parte.tamanho
+        pct = min(100.0, (bytes_enviados / tam_total) * 100) if tam_total > 0 else 100.0
+        if total_partes <= 20 or idx <= 10 or idx == total_partes:
+            print(
+                f"  Pacote {parte.seq} enviado ({formatar_tamanho(parte.tamanho)}) | "
+                f"{idx}/{total_partes} pacotes ({pct:.1f}%) | "
+                f"{formatar_tamanho(bytes_enviados)} / {tam_total_str} -> {detalhe}"
+            )
         elif idx == 11:
-            print(f"  ... (+{len(partes) - 11} pacotes enviados)")
+            print(f"  ... (+{total_partes - 11} pacotes enviados)")
 
 
 def executar_cliente_pc_real(porta_local: int = PORTA_PADRAO) -> None:

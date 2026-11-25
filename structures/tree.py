@@ -1,5 +1,6 @@
 """Árvore N-ária da topologia da rede e núcleo de roteamento."""
 
+from core.models import formatar_tamanho
 from core.sockets import (
     enviar_pacote_real,
     enviar_ping_real,
@@ -216,7 +217,15 @@ class Router:
 
         return saida
 
-    def _entregar_pacote_simulado(self, pacote, destino, nome_origem: str, rota_str: str, saltos: int) -> str:
+    def _entregar_pacote_simulado(
+        self,
+        pacote,
+        destino,
+        nome_origem: str,
+        rota_str: str,
+        saltos: int,
+        progresso_str: str,
+    ) -> str:
         extra = ""
         if pacote.payload is not None:
             if getattr(pacote, "eh_mensagem", False):
@@ -230,9 +239,19 @@ class Router:
         destino.caixa_entrada.append(pacote)
         return (
             f"[ENTREGUE] {pacote} | {nome_origem} -> {destino.nome}\n"
+            f"  {progresso_str}\n"
             f"  Rota ({saltos} saltos): {rota_str} | "
             f"Entregue na caixa de entrada de {destino.nome} | Fila: {self.fila_transmissao.size()}"
             f"{extra}"
+        )
+
+    @staticmethod
+    def _formatar_progresso(pacote_atual, enviados: int, bytes_enviados: int) -> str:
+        tam_total = getattr(pacote_atual, "tamanho_total", None) or max(bytes_enviados, pacote_atual.tamanho)
+        pct = min(100.0, (bytes_enviados / tam_total) * 100) if tam_total > 0 else 100.0
+        return (
+            f"Pacote {pacote_atual.seq} enviado | {enviados}/{pacote_atual.total_partes} pacotes "
+            f"({pct:.1f}%) | {formatar_tamanho(bytes_enviados)} / {formatar_tamanho(tam_total)}"
         )
 
     def processar_proximo(self) -> str:
@@ -284,8 +303,10 @@ class Router:
 
             if pacote.total_partes == 1:
                 destino.caixa_entrada.append(pacote)
+                progresso = self._formatar_progresso(pacote, 1, pacote.tamanho)
                 return (
                     f"[ENTREGUE UDP] {pacote} | {nome_origem} -> {destino.nome}\n"
+                    f"  {progresso}\n"
                     f"  Rota ({saltos} saltos): {rota_str} | {detalhe} | Fila: {self.fila_transmissao.size()}"
                 )
 
@@ -296,9 +317,13 @@ class Router:
                 self.buffers_recepcao.insert(chave_tx, buffer)
             buffer.append(pacote)
 
+            bytes_enviados = sum(p.tamanho for p in buffer)
+            progresso = self._formatar_progresso(pacote, len(buffer), bytes_enviados)
+
             if len(buffer) < pacote.total_partes:
                 return (
                     f"[UDP ENVIADO] {pacote} | {nome_origem} -> {destino.nome}\n"
+                    f"  {progresso}\n"
                     f"  Rota ({saltos} saltos): {rota_str} | {detalhe} | Fila: {self.fila_transmissao.size()}"
                 )
 
@@ -308,11 +333,13 @@ class Router:
             destino.caixa_entrada.append(pacote_unido)
             return (
                 f"[ENTREGUE UDP] {pacote_unido} | {nome_origem} -> {destino.nome}\n"
+                f"  {progresso}\n"
                 f"  Rota ({saltos} saltos): {rota_str} | {detalhe} | Fila: {self.fila_transmissao.size()}"
             )
 
         if pacote.total_partes == 1:
-            return self._entregar_pacote_simulado(pacote, destino, nome_origem, rota_str, saltos)
+            progresso = self._formatar_progresso(pacote, 1, pacote.tamanho)
+            return self._entregar_pacote_simulado(pacote, destino, nome_origem, rota_str, saltos, progresso)
 
         chave_tx = f"{destino.ip}:{pacote.transmissao_id}"
         buffer = self.buffers_recepcao.get(chave_tx)
@@ -321,19 +348,21 @@ class Router:
             self.buffers_recepcao.insert(chave_tx, buffer)
 
         buffer.append(pacote)
+        bytes_enviados = sum(p.tamanho for p in buffer)
+        progresso = self._formatar_progresso(pacote, len(buffer), bytes_enviados)
 
         if len(buffer) < pacote.total_partes:
             return (
                 f"[EM TRÂNSITO] {pacote} | {nome_origem} -> {destino.nome}\n"
-                f"  Rota ({saltos} saltos): {rota_str} | "
-                f"Recebidos: {len(buffer)}/{pacote.total_partes} | Fila: {self.fila_transmissao.size()}"
+                f"  {progresso}\n"
+                f"  Rota ({saltos} saltos): {rota_str} | Fila: {self.fila_transmissao.size()}"
             )
 
         self.buffers_recepcao.remove(chave_tx)
         ordenar_pacotes_por_sequencia(buffer)
 
         pacote_unido = type(pacote).unir(buffer)
-        return self._entregar_pacote_simulado(pacote_unido, destino, nome_origem, rota_str, saltos)
+        return self._entregar_pacote_simulado(pacote_unido, destino, nome_origem, rota_str, saltos, progresso)
 
     def processar_lote(self, quantidade: int) -> list[str]:
         """Processa até `quantidade` pacotes da fila."""

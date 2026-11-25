@@ -141,25 +141,34 @@ class Simulador:
 
     def _enfileirar_pacote_inicial(self, pacote_inicial: Packet, descricao: str) -> str:
         tamanho_total = pacote_inicial.tamanho
+        tam_total_str = formatar_tamanho(tamanho_total)
         partes = pacote_inicial.dividir()
         del pacote_inicial
 
         if len(partes) > 1:
             random.shuffle(partes)
 
-        for pacote in partes:
-            self.roteador.fila_transmissao.enqueue(pacote)
+        total_partes = len(partes)
+        bytes_acumulados = 0
+        detalhes_envio: list[str] = []
 
-        linhas = [f"[OK] {descricao} ({formatar_tamanho(tamanho_total)}) enviado para a fila:"]
-        if len(partes) <= 20:
-            for pacote in partes:
-                linhas.append(f"  Pacote {pacote.seq} enfileirado ({formatar_tamanho(pacote.tamanho)})")
+        for idx, pacote in enumerate(partes, start=1):
+            self.roteador.fila_transmissao.enqueue(pacote)
+            bytes_acumulados += pacote.tamanho
+            pct = (bytes_acumulados / tamanho_total) * 100
+            detalhes_envio.append(
+                f"  Pacote {pacote.seq} enfileirado ({formatar_tamanho(pacote.tamanho)}) | "
+                f"{idx}/{total_partes} pacotes ({pct:.1f}%) | "
+                f"{formatar_tamanho(bytes_acumulados)} / {tam_total_str}"
+            )
+
+        linhas = [f"[OK] {descricao} ({tam_total_str}) enviado para a fila:"]
+        if total_partes <= 20:
+            linhas.extend(detalhes_envio)
         else:
-            for pacote in partes[:10]:
-                linhas.append(f"  Pacote {pacote.seq} enfileirado ({formatar_tamanho(pacote.tamanho)})")
-            linhas.append(f"  ... (+{len(partes) - 15} pacotes enfileirados)")
-            for pacote in partes[-5:]:
-                linhas.append(f"  Pacote {pacote.seq} enfileirado ({formatar_tamanho(pacote.tamanho)})")
+            linhas.extend(detalhes_envio[:10])
+            linhas.append(f"  ... (+{total_partes - 15} pacotes enfileirados)")
+            linhas.extend(detalhes_envio[-5:])
 
         linhas.append(f"  Total na fila: {self.roteador.fila_transmissao.size()}")
         return "\n".join(linhas)

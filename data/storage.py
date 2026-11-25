@@ -60,6 +60,7 @@ def _serializar_pacote(pacote: Packet, incluir_payload_binario: bool = False) ->
         "destino_ip": pacote.destino_ip,
         "arquivo": pacote.arquivo,
         "tamanho": pacote.tamanho,
+        "tamanho_total": getattr(pacote, "tamanho_total", pacote.tamanho),
         "ttl": pacote.ttl,
         "transmissao_id": pacote.transmissao_id,
         "seq": pacote.seq,
@@ -93,6 +94,7 @@ def _desserializar_pacote(dados: dict) -> Packet:
         payload=payload,
         eh_mensagem=dados.get("eh_mensagem", False),
         caminho_salvo=dados.get("caminho_salvo"),
+        tamanho_total=dados.get("tamanho_total", dados["tamanho"]),
     )
     pacote.id = dados.get("id", pacote.id)
     pacote.ttl = dados.get("ttl", 16)

@@ -108,6 +108,7 @@ class Packet:
         payload: bytes | None = None,
         eh_mensagem: bool = False,
         caminho_salvo: str | None = None,
+        tamanho_total: int | None = None,
     ):
         if not arquivo or not arquivo.strip():
             raise ValueError("Nome do arquivo do pacote não pode ser vazio.")
@@ -122,6 +123,7 @@ class Packet:
         self.destino_ip = destino_ip
         self.arquivo = arquivo.strip()
         self.tamanho = tamanho
+        self.tamanho_total = tamanho_total if tamanho_total is not None else tamanho
         self.ttl = 16
         self.transmissao_id = transmissao_id
         self.seq = seq
@@ -157,6 +159,7 @@ class Packet:
                         total_partes=qtd,
                         payload=fatia,
                         eh_mensagem=self.eh_mensagem,
+                        tamanho_total=self.tamanho,
                     )
                 )
             return partes
@@ -175,6 +178,7 @@ class Packet:
                     seq=i,
                     total_partes=qtd,
                     eh_mensagem=self.eh_mensagem,
+                    tamanho_total=self.tamanho,
                 )
             )
         return partes
